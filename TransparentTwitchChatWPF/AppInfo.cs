@@ -17,7 +17,7 @@ public static class AppInfo
             }
             else
             {
-                return $"1.1.x";
+                return "1.2.0";
             }
         } 
     }

@@ -10,6 +10,14 @@ using MessageBox = System.Windows.MessageBox;
 using Point = System.Windows.Point;
 
 /*
+ * v1.2.0
+ * - Viewer count and activity feed, each with its own setting
+ * - Stream Preview and Quick Actions widgets on the same Twitch login
+ * - Widgets stay under the chat, remember their position, and stay clickable when borders are hidden
+ * - Custom chat sounds, and export/import for settings
+ * - Auto-hide borders applies to the chat and widgets
+ * - Updates come from this repository
+ * 
  * v1.1.1
  * - Fixed widget settings not being saved
  * - Added BTTV, FFZ, and 7TV emotes to KapChat
@@ -884,7 +892,7 @@ public partial class MainWindow : Window, BrowserWindow
 
     private void MenuItem_VisitWebsite(object sender, RoutedEventArgs e)
     {
-        ShellHelper.OpenUrl("https://github.com/baffler/Transparent-Twitch-Chat-Overlay/releases/latest");
+        ShellHelper.OpenUrl("https://github.com/ParanormalBanana/Transparent-Twitch-Chat-Overlay/releases/latest");
         e.Handled = true;
     }
 
@@ -1703,7 +1711,7 @@ public partial class MainWindow : Window, BrowserWindow
 #else
         _logger.LogInformation("Checking for updates...");
 
-        var mgr = new UpdateManager(new GithubSource("https://github.com/baffler/Transparent-Twitch-Chat-Overlay", null, false));
+        var mgr = new UpdateManager(new GithubSource("https://github.com/ParanormalBanana/Transparent-Twitch-Chat-Overlay", null, false));
 
         try
         {

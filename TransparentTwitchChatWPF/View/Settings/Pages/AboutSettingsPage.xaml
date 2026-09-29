@@ -14,6 +14,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter" />
     </UserControl.Resources>
 
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
     <Grid>
         <Border MaxWidth="600"
                 HorizontalAlignment="Center"
@@ -41,20 +42,24 @@
                     </StackPanel>
                 </ui:SimpleStackPanel>
 
-                <TextBlock Text="Created by Baffler" HorizontalAlignment="Center" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,0,0,12"/>
+                <TextBlock Text="Created by Baffler" HorizontalAlignment="Center" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,0,0,4"/>
+
+                <TextBlock Text="1.2.0" FontWeight="SemiBold" Margin="0,8,0,4"/>
+                <TextBlock TextWrapping="Wrap" Foreground="{ui:ThemeResource SystemControlPageTextBaseMediumBrush}"
+                           Text="Viewer count and activity feed, each with its own setting. Stream Preview and Quick Actions widgets use the same Twitch login, stay under the chat, and remember their position. Interactable widgets stay clickable with borders hidden. Custom chat sounds, settings export and import, and auto-hide borders for the chat and widgets. Updates come from this repository." />
 
                 <Separator />
 
                 <TextBlock Text="Resources" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,8,0,0"/>
 
-                <ui:HyperlinkButton NavigateUri="https://github.com/baffler/Transparent-Twitch-Chat-Overlay">
+                <ui:HyperlinkButton NavigateUri="https://github.com/ParanormalBanana/Transparent-Twitch-Chat-Overlay">
                     <ui:SimpleStackPanel Orientation="Horizontal" Spacing="8">
                         <ui:SymbolIcon Symbol="Link"/>
                         <TextBlock Text="GitHub Repository"/>
                     </ui:SimpleStackPanel>
                 </ui:HyperlinkButton>
 
-                <ui:HyperlinkButton NavigateUri="https://github.com/baffler/Transparent-Twitch-Chat-Overlay/issues">
+                <ui:HyperlinkButton NavigateUri="https://github.com/ParanormalBanana/Transparent-Twitch-Chat-Overlay/issues">
                     <ui:SimpleStackPanel Orientation="Horizontal" Spacing="8">
                         <ui:SymbolIcon Symbol="Repair" />
                         <TextBlock Text="Report an Issue or Request a Feature"/>
@@ -82,4 +87,5 @@
             </ui:SimpleStackPanel>
         </Border>
     </Grid>
+    </ScrollViewer>
 </UserControl>

@@ -619,7 +619,7 @@ namespace TransparentTwitchChatWPF
 
         private void MenuItem_VisitWebsite(object sender, RoutedEventArgs e)
         {
-            ShellHelper.OpenUrl("https://github.com/baffler/Transparent-Twitch-Chat-Overlay/releases");
+            ShellHelper.OpenUrl("https://github.com/ParanormalBanana/Transparent-Twitch-Chat-Overlay/releases");
             e.Handled = true;
         }
 
