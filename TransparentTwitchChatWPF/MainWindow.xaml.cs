@@ -152,6 +152,10 @@ public partial class MainWindow : Window, BrowserWindow
 
     private DispatcherTimer _timerCheckForegroundFocus;
     private DispatcherTimer _timerCheckWebView2Install;
+    private DispatcherTimer _viewerCountTimer;
+    private int _viewerCountRequestId;
+    private string _viewerCountText;
+    private string _viewerCountState = "hidden";
     private int _timerTick = 0;
 
     [DllImport("user32.dll")]
@@ -204,6 +208,11 @@ public partial class MainWindow : Window, BrowserWindow
         _timerCheckForegroundFocus.Interval = TimeSpan.FromSeconds(1);
         _timerCheckForegroundFocus.Tick += _timer_Tick;
         _timerCheckForegroundFocus.Start();
+
+        _viewerCountTimer = new DispatcherTimer();
+        _viewerCountTimer.Interval = TimeSpan.FromSeconds(30);
+        _viewerCountTimer.Tick += ViewerCountTimer_Tick;
+        ConfigureViewerCountUpdates();
 
         SetupOrReplaceHotkeys();
         //SettingsWindow.SettingsWindowActive += OnSettingsWindowActive;
@@ -951,6 +960,7 @@ public partial class MainWindow : Window, BrowserWindow
         this.webView.Dispatcher.Invoke(() => SetZoomFactor(App.Settings.GeneralSettings.ZoomLevel));
         // Configuration for the current chat type
         await _webViewConfigurator.ConfigureAsync(webView.CoreWebView2);
+        await PushViewerCountToPageAsync();
     }
 
     private void RestoreNativeChatFiles()
@@ -1206,6 +1216,7 @@ public partial class MainWindow : Window, BrowserWindow
 
             SetupOrReplaceHotkeys();
             HotkeyManager.Current.IsEnabled = true;
+            ConfigureViewerCountUpdates();
         }
         else // Cancel changes and revert settings back
         {
@@ -1655,8 +1666,103 @@ public partial class MainWindow : Window, BrowserWindow
         SetInteractableAllWindows(isInteractable);
     }
 
+    private void ConfigureViewerCountUpdates()
+    {
+        if (App.Settings.GeneralSettings.ShowViewerCount)
+        {
+            if (!_viewerCountTimer.IsEnabled)
+                _viewerCountTimer.Start();
+
+            _ = RefreshViewerCountAsync();
+        }
+        else
+        {
+            _viewerCountTimer.Stop();
+            _viewerCountRequestId++;
+            _viewerCountText = null;
+            _viewerCountState = "hidden";
+            _ = PushViewerCountToPageAsync();
+        }
+    }
+
+    private async void ViewerCountTimer_Tick(object sender, EventArgs e)
+    {
+        await RefreshViewerCountAsync();
+    }
+
+    private async Task RefreshViewerCountAsync()
+    {
+        if (!App.Settings.GeneralSettings.ShowViewerCount)
+        {
+            _viewerCountText = null;
+            _viewerCountState = "hidden";
+            await PushViewerCountToPageAsync();
+            return;
+        }
+
+        var login = ViewerCountClient.ResolveChannelLogin();
+        if (login == null)
+        {
+            _viewerCountText = null;
+            _viewerCountState = "hidden";
+            await PushViewerCountToPageAsync();
+            return;
+        }
+
+        int requestId = ++_viewerCountRequestId;
+
+        ViewerCountSnapshot snapshot;
+        try
+        {
+            snapshot = await ViewerCountClient.GetAsync(login);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to refresh viewer count for {Login}", login);
+            snapshot = new ViewerCountSnapshot(ViewerCountState.Unavailable, 0);
+        }
+
+        if (requestId != _viewerCountRequestId || !App.Settings.GeneralSettings.ShowViewerCount)
+            return;
+
+        ApplyViewerCount(snapshot);
+    }
+
+    private void ApplyViewerCount(ViewerCountSnapshot snapshot)
+    {
+        switch (snapshot.State)
+        {
+            case ViewerCountState.Live:
+                _viewerCountText = snapshot.Viewers.ToString("N0");
+                _viewerCountState = "live";
+                break;
+            case ViewerCountState.Offline:
+                _viewerCountText = "Offline";
+                _viewerCountState = "offline";
+                break;
+            default:
+                if (string.IsNullOrEmpty(_viewerCountText))
+                {
+                    _viewerCountText = "—";
+                    _viewerCountState = "offline";
+                }
+                break;
+        }
+
+        _ = PushViewerCountToPageAsync();
+    }
+
+    private Task PushViewerCountToPageAsync()
+    {
+        if (webView?.CoreWebView2 == null)
+            return Task.CompletedTask;
+
+        return ViewerCountOverlay.UpdateAsync(webView.CoreWebView2, _viewerCountText, _viewerCountState);
+    }
+
     private void Window_Closed(object sender, EventArgs e)
     {
+        _viewerCountTimer?.Stop();
         Growl.GrowlMessageRequested -= HandleGrowlMessage;
 
         if (!App.IsShuttingDown)

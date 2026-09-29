@@ -217,6 +217,7 @@ public class GeneralSettings
     public double ZoomLevel { get; set; } = 1;
     public byte OpacityLevel { get; set; } = 0;
     public bool AutoHideBorders { get; set; } = false;
+    public bool ShowViewerCount { get; set; } = true;
     public bool EnableTrayIcon { get; set; } = true;
     public bool ConfirmClose { get; set; } = true;
     public bool HideTaskbarIcon { get; set; } = false;

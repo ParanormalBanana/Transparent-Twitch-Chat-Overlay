@@ -20,6 +20,20 @@
                     Margin="20,5"
                     />
                 <CheckBox 
+                    Name="cbShowViewerCount"
+                    Content="Show viewer count"
+                    HorizontalAlignment="Left" 
+                    VerticalAlignment="Top"
+                    Margin="20,5"
+                    />
+                <TextBlock 
+                    Text="Shows the live viewer count for the channel set in Chat settings, using the chat font, size, and outline."
+                    FontStyle="Italic"
+                    TextWrapping="Wrap"
+                    HorizontalAlignment="Left" 
+                    VerticalAlignment="Top"
+                    Margin="40,0,20,5"/>
+                <CheckBox 
                     Name="cbInteraction"
                     Content="Allow Interaction (When Borders Shown)"
                     HorizontalAlignment="Left" 

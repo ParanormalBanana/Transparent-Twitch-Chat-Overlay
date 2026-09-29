@@ -25,6 +25,7 @@ public partial class GeneralSettingsPage : UserControl
         tbSoundClipsFolder.Text = App.Settings.GeneralSettings.SoundClipsFolder;
 
         this.cbAutoHideBorders.IsChecked = App.Settings.GeneralSettings.AutoHideBorders;
+        this.cbShowViewerCount.IsChecked = App.Settings.GeneralSettings.ShowViewerCount;
         this.cbEnableTrayIcon.IsChecked = true; //TODO: Temp fix for a bug ~ this.config.EnableTrayIcon;
         //this.cbConfirmClose.IsChecked = App.Settings.GeneralSettings.ConfirmClose;
         this.cbTaskbar.IsChecked = App.Settings.GeneralSettings.HideTaskbarIcon;
@@ -42,6 +43,7 @@ public partial class GeneralSettingsPage : UserControl
     public void SaveValues()
     {
         App.Settings.GeneralSettings.AutoHideBorders = this.cbAutoHideBorders.IsChecked ?? false;
+        App.Settings.GeneralSettings.ShowViewerCount = this.cbShowViewerCount.IsChecked ?? false;
         App.Settings.GeneralSettings.EnableTrayIcon = this.cbEnableTrayIcon.IsChecked ?? false;
         //App.Settings.GeneralSettings.ConfirmClose     = this.cbConfirmClose.IsChecked ?? false;
         App.Settings.GeneralSettings.HideTaskbarIcon = this.cbTaskbar.IsChecked ?? false;
