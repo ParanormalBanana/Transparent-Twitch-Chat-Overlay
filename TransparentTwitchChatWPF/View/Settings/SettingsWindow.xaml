@@ -54,6 +54,11 @@
                 </ListViewItem>
                 <ListViewItem>
                     <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Backup" VerticalAlignment="Center" />
+                    </StackPanel>
+                </ListViewItem>
+                <ListViewItem>
+                    <StackPanel Orientation="Horizontal">
                         <TextBlock Text="About" VerticalAlignment="Center" />
                     </StackPanel>
                 </ListViewItem>

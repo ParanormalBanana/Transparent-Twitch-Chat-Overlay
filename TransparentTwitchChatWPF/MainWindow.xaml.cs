@@ -156,6 +156,9 @@ public partial class MainWindow : Window, BrowserWindow
     private int _viewerCountRequestId;
     private string _viewerCountText;
     private string _viewerCountState = "hidden";
+    private string _latestActivityText;
+    private string _latestActivityKind;
+    private DateTimeOffset? _latestActivityAt;
     private int _timerTick = 0;
 
     [DllImport("user32.dll")]
@@ -189,6 +192,8 @@ public partial class MainWindow : Window, BrowserWindow
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _twitchService = twitchService ?? throw new ArgumentNullException(nameof(twitchService));
         _twitchService.ChannelPointsRewardRedeemed += OnChannelPointsRewardRedeemed;
+        _twitchService.LatestActivityChanged += OnLatestActivityChanged;
+        _twitchService.EnsureActivityFeed();
         _webViewConfigurator = webViewConfigurator ?? throw new ArgumentNullException(nameof(webViewConfigurator));
         _nativeChatFileManager = nativeChatFileManager ?? throw new ArgumentNullException(nameof(nativeChatFileManager));
 
@@ -202,6 +207,7 @@ public partial class MainWindow : Window, BrowserWindow
             .PersistOn(nameof(Window.Closing))
             .StopTrackingOn(nameof(Window.Closing));
         App.Settings.Tracker.Track(this);
+        WindowPlacement.Remember(this, () => App.Settings.Tracker.Persist(this));
 
         _timerTick = 0;
         _timerCheckForegroundFocus = new DispatcherTimer();
@@ -222,6 +228,9 @@ public partial class MainWindow : Window, BrowserWindow
 
     private void OnChannelPointsRewardRedeemed(object sender, TwitchLib.EventSub.Websockets.Core.EventArgs.Channel.ChannelPointsCustomRewardRedemptionArgs e)
     {
+        if (!App.Settings.GeneralSettings.RedemptionsEnabled)
+            return;
+
         _logger.LogInformation("Channel Points Reward Redeemed");
 
         var payloadEvent = e.Notification.Payload.Event;
@@ -467,6 +476,7 @@ public partial class MainWindow : Window, BrowserWindow
 
         // Initialize and subscribe to events.
         await webView.EnsureCoreWebView2Async(cwv2Environment);
+        TwitchWebSession.ApplyConnectedAccount(webView.CoreWebView2);
 
         webView.CoreWebView2InitializationCompleted += webView_CoreWebView2InitializationCompleted;
         webView.NavigationCompleted += webView_NavigationCompleted;
@@ -562,14 +572,34 @@ public partial class MainWindow : Window, BrowserWindow
 
     private void CheckForegroundWindow()
     {
-        IntPtr foregroundWindow = GetForegroundWindow();
-        var hwnd = new WindowInteropHelper(this).Handle;
+        KeepChatAboveWidgets();
+    }
 
-        foreach (BrowserWindow win in this.windows)
-            win.SetTopMost(true);
+    private bool _stackingWidgets;
 
-        if (foregroundWindow != hwnd)
-            WindowHelper.SetWindowPosTopMost(hwnd);
+    public void KeepChatAboveWidgets()
+    {
+        if (_stackingWidgets)
+            return;
+
+        var chatHwnd = new WindowInteropHelper(this).Handle;
+        if (chatHwnd == IntPtr.Zero)
+            return;
+
+        _stackingWidgets = true;
+        try
+        {
+            WindowHelper.SetWindowPosTopMostNoActivate(chatHwnd);
+            foreach (var widget in windows.OfType<CustomWindow>())
+            {
+                widget.Topmost = false;
+                WindowHelper.SetWindowPosNotTopMost(new WindowInteropHelper(widget).Handle);
+            }
+        }
+        finally
+        {
+            _stackingWidgets = false;
+        }
     }
 
     public void ProcessCommandLineArgs(string[] args)
@@ -1088,6 +1118,7 @@ public partial class MainWindow : Window, BrowserWindow
         else
         {
             App.Settings.GeneralSettings.CustomWindows.Add(URL);
+            App.Settings.Persist();
             Debug.WriteLine("Creating new window with URL: " + URL);
             Debug.WriteLine("Custom CSS: " + CustomCSS);
             OpenNewCustomWindow(URL, displayName, CustomCSS, allowInteraction);
@@ -1110,6 +1141,16 @@ public partial class MainWindow : Window, BrowserWindow
     {
         if (!hasWebView2Runtime) return;
         CreateNewWindowDialog();
+    }
+
+    private void ApplyChatNotificationSound()
+    {
+        if (this.jsCallbackFunctions == null)
+            return;
+
+        string file = ChatSounds.Resolve(App.Settings.GeneralSettings.ChatNotificationSound);
+        this.jsCallbackFunctions.OnAudioDeviceChanged();
+        this.jsCallbackFunctions.MediaFile = file ?? string.Empty;
     }
 
     private string GetSoundClipsFolder()
@@ -1168,6 +1209,11 @@ public partial class MainWindow : Window, BrowserWindow
         settingsWindow.CreateWidgetRequested += (window) => {
             CreateNewWindowDialog(window);
         };
+        settingsWindow.AddWidgetRequested += (url, name) => CreateNewWindow(url, name, TwitchWidgets.DefaultCssFor(url), true);
+        settingsWindow.RemoveWidgetRequested += CloseCustomWindow;
+        settingsWindow.EditWidgetRequested += (window, url) => EditCustomWindow(url, window);
+        settingsWindow.WidgetEnabledRequested += SetWidgetEnabled;
+        settingsWindow.SetWidgetNameLookup(WidgetDisplayName);
 
         settingsWindow.CheckForUpdateRequested += () => {
             _ = CheckForUpdateAsync(notifyIfNoUpdate: true, settingsWindow);
@@ -1183,6 +1229,7 @@ public partial class MainWindow : Window, BrowserWindow
                 var chatType = (ChatTypes)App.Settings.GeneralSettings.ChatType;
 
                 SetupChatProvider();
+                ApplyChatNotificationSound();
 
                 /*
                 if (!App.Settings.GeneralSettings.RedemptionsEnabled)
@@ -1216,7 +1263,10 @@ public partial class MainWindow : Window, BrowserWindow
 
             SetupOrReplaceHotkeys();
             HotkeyManager.Current.IsEnabled = true;
+            _twitchService.EnsureActivityFeed();
             ConfigureViewerCountUpdates();
+            if (App.Settings.GeneralSettings.AutoHideBorders)
+                HideBordersForAllWindows();
         }
         else // Cancel changes and revert settings back
         {
@@ -1230,14 +1280,343 @@ public partial class MainWindow : Window, BrowserWindow
         CustomWindow newWindow = new CustomWindow(this, URL, displayName, CustomCSS, allowInteraction);
         windows.Add(newWindow);
         newWindow.Show();
+        KeepChatAboveWidgets();
     }
 
     public void RemoveCustomWindow(string url)
     {
+        bool changed = false;
         if (App.Settings.GeneralSettings.CustomWindows.Contains(url))
         {
             App.Settings.GeneralSettings.CustomWindows.Remove(url);
+            changed = true;
         }
+
+        var disabled = DisabledWidgets();
+        if (disabled.Contains(url))
+        {
+            disabled.Remove(url);
+            changed = true;
+        }
+
+        if (changed)
+            App.Settings.Persist();
+    }
+
+    public void DisableCustomWindow(string url)
+    {
+        var disabled = DisabledWidgets();
+        if (!disabled.Contains(url))
+        {
+            disabled.Add(url);
+            App.Settings.Persist();
+        }
+    }
+
+    public void ForgetClosedWidget(CustomWindow window)
+    {
+        windows.Remove(window);
+    }
+
+    public void DeleteWidgetSettingsFile(string url)
+    {
+        try
+        {
+            string path = WidgetSettingsPath(url);
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Could not delete widget settings: {ex.Message}");
+        }
+    }
+
+    public void CloseCustomWindow(string url)
+    {
+        var match = FindCustomWindow(url);
+        if (match != null)
+        {
+            match.CloseWithoutPrompt();
+            return;
+        }
+
+        RemoveCustomWindow(url);
+        DeleteWidgetSettingsFile(url);
+    }
+
+    public void SetWidgetEnabled(string url, bool enabled)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return;
+
+        if (enabled)
+        {
+            var disabled = DisabledWidgets();
+            if (disabled.Contains(url))
+            {
+                disabled.Remove(url);
+                App.Settings.Persist();
+            }
+
+            if (FindCustomWindow(url) == null)
+                OpenNewCustomWindow(url, "", "", false);
+            return;
+        }
+
+        DisableCustomWindow(url);
+        FindCustomWindow(url)?.Close();
+    }
+
+    private CustomWindow FindCustomWindow(string url)
+    {
+        return windows.OfType<CustomWindow>().FirstOrDefault(w =>
+            string.Equals(w.Url, url, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string WidgetDisplayName(string url)
+    {
+        var match = FindCustomWindow(url);
+        string name = match?.DisplayName;
+        if (string.IsNullOrWhiteSpace(name) || name == match.HashCode)
+            name = ReadSavedWidgetString(url, "DisplayName");
+        if (string.IsNullOrWhiteSpace(name) || name == Hasher.Create64BitHash(url))
+            return null;
+        return name;
+    }
+
+    private bool IsWidgetDisabled(string url)
+    {
+        return DisabledWidgets().Contains(url);
+    }
+
+    private System.Collections.Specialized.StringCollection DisabledWidgets()
+    {
+        App.Settings.GeneralSettings.DisabledWidgets ??= new System.Collections.Specialized.StringCollection();
+        return App.Settings.GeneralSettings.DisabledWidgets;
+    }
+
+    private void MigrateStreamPreviewWidgets()
+    {
+        var saved = App.Settings.GeneralSettings.CustomWindows;
+        if (saved == null || saved.Count == 0)
+            return;
+
+        var urls = saved.Cast<string>().ToList();
+        bool changed = false;
+        foreach (string url in urls)
+        {
+            string playerUrl = null;
+            if (TwitchWidgets.TryGetDashboardStreamPreviewLogin(url, out string login))
+                playerUrl = TwitchWidgets.PlayerPopoutUrl(login);
+            else if (!TwitchWidgets.TryAddDefaultPreviewVolume(url, out playerUrl))
+                continue;
+            saved.Remove(url);
+            var disabled = DisabledWidgets();
+            bool wasDisabled = disabled.Contains(url);
+            if (wasDisabled)
+                disabled.Remove(url);
+
+            if (!saved.Contains(playerUrl))
+            {
+                saved.Add(playerUrl);
+                if (wasDisabled)
+                    disabled.Add(playerUrl);
+                MoveWidgetSettings(url, playerUrl);
+            }
+
+            changed = true;
+        }
+
+        if (changed)
+            App.Settings.Persist();
+    }
+
+    private void MoveWidgetSettings(string oldUrl, string newUrl)
+    {
+        try
+        {
+            string oldPath = WidgetSettingsPath(oldUrl);
+            string newPath = WidgetSettingsPath(newUrl);
+            if (!File.Exists(oldPath) || File.Exists(newPath))
+                return;
+
+            File.Copy(oldPath, newPath);
+            var items = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(newPath))?.AsArray();
+            if (items == null)
+                return;
+
+            string oldHash = Hasher.Create64BitHash(oldUrl);
+            string newHash = Hasher.Create64BitHash(newUrl);
+            SetSavedWidgetValue(items, "Url", newUrl);
+            SetSavedWidgetValue(items, "HashCode", newHash);
+            foreach (var item in items)
+            {
+                if (item?["Name"]?.GetValue<string>() != "DisplayName")
+                    continue;
+                if (item["Value"]?.GetValue<string>() == oldHash)
+                    item["Value"] = System.Text.Json.Nodes.JsonValue.Create("Stream Preview");
+                break;
+            }
+
+            File.WriteAllText(newPath, items.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Could not move widget settings: {ex.Message}");
+        }
+    }
+
+    private static string WidgetSettingsPath(string url)
+    {
+        string folder = (App.Settings.Tracker.Store as Jot.Storage.JsonFileStore).FolderPath;
+        return Path.Combine(folder, Hasher.Create64BitHash(url) + ".json");
+    }
+
+    private static string ReadSavedWidgetString(string url, string name)
+    {
+        var value = ReadSavedWidgetValue(url, name);
+        if (value == null)
+            return null;
+        try
+        {
+            return value.GetValue<string>();
+        }
+        catch
+        {
+            return value.ToString();
+        }
+    }
+
+    private static bool? ReadSavedWidgetBool(string url, string name)
+    {
+        var value = ReadSavedWidgetValue(url, name);
+        if (value is System.Text.Json.Nodes.JsonValue json && json.TryGetValue<bool>(out bool result))
+            return result;
+        return null;
+    }
+
+    private static System.Text.Json.Nodes.JsonNode ReadSavedWidgetValue(string url, string name)
+    {
+        try
+        {
+            string path = WidgetSettingsPath(url);
+            if (!File.Exists(path))
+                return null;
+
+            var items = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))?.AsArray();
+            if (items == null)
+                return null;
+
+            foreach (var item in items)
+            {
+                if (item?["Name"]?.GetValue<string>() == name)
+                    return item["Value"];
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Could not read widget settings: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    private static void UpdateSavedWidget(string url, string displayName, string css, bool allowInteraction)
+    {
+        try
+        {
+            string path = WidgetSettingsPath(url);
+            if (!File.Exists(path))
+                return;
+
+            var items = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))?.AsArray();
+            if (items == null)
+                return;
+
+            string hash = Hasher.Create64BitHash(url);
+            string name = string.IsNullOrWhiteSpace(displayName) ? hash : displayName.Trim();
+            SetSavedWidgetValue(items, "DisplayName", name);
+            SetSavedWidgetValue(items, "customCSS", css ?? "");
+            SetSavedWidgetValue(items, "AllowInteraction", allowInteraction);
+            File.WriteAllText(path, items.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Could not update widget settings: {ex.Message}");
+        }
+    }
+
+    private static void SetSavedWidgetValue(System.Text.Json.Nodes.JsonArray items, string name, object value)
+    {
+        foreach (var item in items)
+        {
+            if (item?["Name"]?.GetValue<string>() != name)
+                continue;
+
+            item["Value"] = value switch
+            {
+                bool flag => System.Text.Json.Nodes.JsonValue.Create(flag),
+                _ => System.Text.Json.Nodes.JsonValue.Create(value?.ToString() ?? "")
+            };
+            return;
+        }
+    }
+
+    private void EditCustomWindow(string url, Window owner)
+    {
+        var match = FindCustomWindow(url);
+        string displayName = WidgetDisplayName(url) ?? TwitchWidgets.DisplayNameFor(url);
+        string css = match?.customCSS ?? ReadSavedWidgetString(url, "customCSS") ?? "";
+        bool allowInteraction = match?.AllowInteraction ?? ReadSavedWidgetBool(url, "AllowInteraction") ?? true;
+        if (string.IsNullOrWhiteSpace(css) && TwitchWidgets.IsDashboardWidget(url))
+            css = TwitchWidgets.DefaultCssFor(url);
+
+        var dialog = new Input_Custom();
+        dialog.Owner = owner;
+        dialog.LoadExisting(url, displayName, css, allowInteraction);
+        if (dialog.ShowDialog() != true)
+            return;
+
+        string newUrl = (dialog.Url ?? "").Trim();
+        if (string.IsNullOrEmpty(newUrl))
+        {
+            MessageBox.Show(owner, "Empty or Invalid URL.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        bool urlChanged = !string.Equals(newUrl, url, StringComparison.OrdinalIgnoreCase);
+        if (urlChanged && App.Settings.GeneralSettings.CustomWindows.Contains(newUrl))
+        {
+            MessageBox.Show(owner, "That URL already exists as a window.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        if (urlChanged)
+        {
+            bool wasEnabled = !IsWidgetDisabled(url);
+            CloseCustomWindow(url);
+            if (wasEnabled)
+            {
+                CreateNewWindow(newUrl, dialog.DisplayName, dialog.CustomCSS, dialog.AllowInteraction);
+                return;
+            }
+
+            App.Settings.GeneralSettings.CustomWindows.Add(newUrl);
+            DisableCustomWindow(newUrl);
+            var saved = new CustomWindow(this, newUrl, dialog.DisplayName, dialog.CustomCSS, dialog.AllowInteraction, startBrowser: false);
+            saved.ApplyWidgetSettings(dialog.DisplayName, dialog.CustomCSS, dialog.AllowInteraction);
+            saved.Close();
+            return;
+        }
+
+        if (match == null)
+        {
+            UpdateSavedWidget(url, dialog.DisplayName, dialog.CustomCSS, dialog.AllowInteraction);
+            return;
+        }
+
+        match.ApplyWidgetSettings(dialog.DisplayName, dialog.CustomCSS, dialog.AllowInteraction);
     }
 
     private void Window_Deactivated(object sender, EventArgs e)
@@ -1405,19 +1784,23 @@ public partial class MainWindow : Window, BrowserWindow
         SetBackgroundOpacity(App.Settings.GeneralSettings.OpacityLevel);
 
         // Setup Notification Sound
-        if (App.Settings.GeneralSettings.ChatNotificationSound.ToLower() != "none")
-        {
-            string file = Path.Combine(GetSoundClipsFolder(), App.Settings.GeneralSettings.ChatNotificationSound);
-            this.jsCallbackFunctions.MediaFile = File.Exists(file) ? file : string.Empty;
-        }
+        ApplyChatNotificationSound();
 
         // Open any custom windows
         if (App.Settings.GeneralSettings.CustomWindows != null)
         {
+            MigrateStreamPreviewWidgets();
             // Using default values for CustomWindows, but it will load them from the settings once opened
             foreach (string url in App.Settings.GeneralSettings.CustomWindows)
+            {
+                if (IsWidgetDisabled(url))
+                    continue;
                 OpenNewCustomWindow(url, "", "", false);
+            }
         }
+
+        if (App.Settings.GeneralSettings.AutoHideBorders)
+            hideBorders();
 
         // TODO: Temporary, remove this later on
         if (App.Settings.GeneralSettings.jChatURL.ToLower().Contains("giambaj.it"))
@@ -1681,8 +2064,9 @@ public partial class MainWindow : Window, BrowserWindow
             _viewerCountRequestId++;
             _viewerCountText = null;
             _viewerCountState = "hidden";
-            _ = PushViewerCountToPageAsync();
         }
+
+        _ = PushViewerCountToPageAsync();
     }
 
     private async void ViewerCountTimer_Tick(object sender, EventArgs e)
@@ -1757,7 +2141,25 @@ public partial class MainWindow : Window, BrowserWindow
         if (webView?.CoreWebView2 == null)
             return Task.CompletedTask;
 
-        return ViewerCountOverlay.UpdateAsync(webView.CoreWebView2, _viewerCountText, _viewerCountState);
+        bool showActivity = App.Settings.GeneralSettings.ShowActivityFeed;
+        return ViewerCountOverlay.UpdateAsync(
+            webView.CoreWebView2,
+            _viewerCountText,
+            _viewerCountState,
+            showActivity ? _latestActivityText : null,
+            showActivity ? _latestActivityAt : null,
+            showActivity ? _latestActivityKind : null);
+    }
+
+    private void OnLatestActivityChanged(object sender, ActivityNotice activity)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _latestActivityText = activity.Text;
+            _latestActivityAt = activity.OccurredAt;
+            _latestActivityKind = activity.Kind;
+            _ = PushViewerCountToPageAsync();
+        });
     }
 
     private void Window_Closed(object sender, EventArgs e)
@@ -1796,5 +2198,6 @@ public partial class MainWindow : Window, BrowserWindow
 
         var hwnd = new WindowInteropHelper(this).Handle;
         WindowHelper.SetWindowPosTopMost(hwnd);
+        KeepChatAboveWidgets();
     }
 }

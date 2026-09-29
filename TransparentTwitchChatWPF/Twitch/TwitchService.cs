@@ -35,6 +35,10 @@ public class TwitchService : IHostedService, IDisposable
     public event EventHandler<TwitchUserDataEventArgs> UserDataFetched;
 
     public event EventHandler<ChannelPointsCustomRewardRedemptionArgs> ChannelPointsRewardRedeemed;
+    public event EventHandler<ActivityNotice> LatestActivityChanged;
+
+    public string LatestActivity { get; private set; }
+    private DateTimeOffset _latestActivityAt = DateTimeOffset.MinValue;
 
     public string AuthTokenExpiration { get; private set; } = "...";
     public string TwitchConnectionStatus { get; private set; } = "Not Connected";
@@ -203,24 +207,26 @@ public class TwitchService : IHostedService, IDisposable
         });
     }
 
-    private void InitEventSub()
+    public void EnsureActivityFeed()
+    {
+        InitEventSub(notifyIfMissingCredentials: false);
+    }
+
+    private void InitEventSub(bool notifyIfMissingCredentials = true)
     {
         if (_isEventSubInit) return; // Already initialized
-        if (App.Settings.GeneralSettings.RedemptionsEnabled == false)
-        {
-            _logger.LogInformation("EventSub is disabled in settings. Skipping initialization.");
-            return;
-        }
         if (string.IsNullOrEmpty(App.Settings.GeneralSettings.ChannelID))
         {
             _logger.LogWarning("Channel ID is not set in App.Settings.GeneralSettings. Cannot initialize EventSub.");
-            Growl.Warning("Please setup the Twitch Connection in settings before enabling EventSub.");
+            if (notifyIfMissingCredentials)
+                Growl.Warning("Please setup the Twitch Connection in settings before enabling EventSub.");
             return;
         }
         if (string.IsNullOrEmpty(App.Settings.GeneralSettings.OAuthToken))
         {
             _logger.LogWarning("OAuth Token is not set in App.Settings.GeneralSettings. Cannot initialize EventSub.");
-            Growl.Warning("Please setup the Twitch Connection in settings before enabling EventSub.");
+            if (notifyIfMissingCredentials)
+                Growl.Warning("Please setup the Twitch Connection in settings before enabling EventSub.");
             return;
         }
 
@@ -235,11 +241,18 @@ public class TwitchService : IHostedService, IDisposable
         _eventSubWebsocketClient.ErrorOccurred += OnErrorOccurred;
         _eventSubWebsocketClient.ChannelPointsCustomRewardRedemptionAdd += OnChannelPointsCustomRewardRedemptionAdd;
         _eventSubWebsocketClient.ChannelChatMessage += _eventSubWebsocketClient_ChannelChatMessage;
+        _eventSubWebsocketClient.ChannelFollow += OnChannelFollow;
+        _eventSubWebsocketClient.ChannelSubscribe += OnChannelSubscribe;
+        _eventSubWebsocketClient.ChannelSubscriptionGift += OnChannelSubscriptionGift;
+        _eventSubWebsocketClient.ChannelSubscriptionMessage += OnChannelSubscriptionMessage;
+        _eventSubWebsocketClient.ChannelCheer += OnChannelCheer;
+        _eventSubWebsocketClient.ChannelRaid += OnChannelRaid;
 
         _isEventSubInit = true;
 
         _logger.LogInformation("Connecting to EventSub...");
         _ = StartAsync(CancellationToken.None);
+        _ = LoadLatestKnownActivityAsync();
     }
 
     public void DisableEventSub()
@@ -280,6 +293,100 @@ public class TwitchService : IHostedService, IDisposable
             _logger.LogInformation($"User Input: {eventData.UserInput}");
 
         ChannelPointsRewardRedeemed?.Invoke(this, e);
+        PublishActivity($"{DisplayName(eventData.UserName)} redeemed {eventData.Reward.Title}", "redeem", eventData.RedeemedAt);
+    }
+
+    private async Task OnChannelFollow(object sender, ChannelFollowArgs args)
+    {
+        var evt = args.Notification.Payload.Event;
+        PublishActivity($"{DisplayName(evt.UserName)} followed", "follow", evt.FollowedAt);
+        await Task.CompletedTask;
+    }
+
+    private async Task OnChannelSubscribe(object sender, ChannelSubscribeArgs args)
+    {
+        var evt = args.Notification.Payload.Event;
+        if (!evt.IsGift)
+            PublishActivity($"{DisplayName(evt.UserName)} subscribed", "subscribe");
+        await Task.CompletedTask;
+    }
+
+    private async Task OnChannelSubscriptionGift(object sender, ChannelSubscriptionGiftArgs args)
+    {
+        var evt = args.Notification.Payload.Event;
+        string who = evt.IsAnonymous ? "Someone" : DisplayName(evt.UserName);
+        string subs = evt.Total == 1 ? "1 sub" : $"{evt.Total} subs";
+        PublishActivity($"{who} gifted {subs}", "gift");
+        await Task.CompletedTask;
+    }
+
+    private async Task OnChannelSubscriptionMessage(object sender, ChannelSubscriptionMessageArgs args)
+    {
+        var evt = args.Notification.Payload.Event;
+        PublishActivity($"{DisplayName(evt.UserName)} resubscribed ({evt.CumulativeMonths} months)", "resub");
+        await Task.CompletedTask;
+    }
+
+    private async Task OnChannelCheer(object sender, ChannelCheerArgs args)
+    {
+        var evt = args.Notification.Payload.Event;
+        string who = evt.IsAnonymous ? "Someone" : DisplayName(evt.UserName);
+        PublishActivity($"{who} cheered {evt.Bits}", "cheer");
+        await Task.CompletedTask;
+    }
+
+    private async Task OnChannelRaid(object sender, ChannelRaidArgs args)
+    {
+        var evt = args.Notification.Payload.Event;
+        PublishActivity($"{DisplayName(evt.FromBroadcasterUserName)} raided with {evt.Viewers:N0}", "raid");
+        await Task.CompletedTask;
+    }
+
+    private static string DisplayName(string name)
+    {
+        return string.IsNullOrWhiteSpace(name) ? "Someone" : name;
+    }
+
+    private void PublishActivity(string text, string kind, DateTimeOffset? occurredAt = null)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        var when = occurredAt ?? DateTimeOffset.UtcNow;
+        if (when < _latestActivityAt)
+            return;
+
+        _latestActivityAt = when;
+        LatestActivity = text;
+        _logger.LogInformation("Activity feed: {Activity}", text);
+        LatestActivityChanged?.Invoke(this, new ActivityNotice(text, when, kind));
+    }
+
+    /// <summary>
+    /// EventSub only delivers events that happen after the socket connects.
+    /// The most recent follower is loaded so the line matches the activity feed immediately.
+    /// </summary>
+    private async Task LoadLatestKnownActivityAsync()
+    {
+        try
+        {
+            var broadcasterId = App.Settings.GeneralSettings.ChannelID;
+            var token = App.Settings.GeneralSettings.OAuthToken;
+            if (string.IsNullOrWhiteSpace(broadcasterId) || string.IsNullOrWhiteSpace(token))
+                return;
+
+            _api.Settings.AccessToken = token;
+            var response = await _api.Helix.Channels.GetChannelFollowersAsync(broadcasterId, first: 1);
+            var follower = response?.Data?.FirstOrDefault();
+            if (follower == null || !DateTimeOffset.TryParse(follower.FollowedAt, out var followedAt))
+                return;
+
+            PublishActivity($"{DisplayName(follower.UserName)} followed", "follow", followedAt);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not load the latest follower for the activity line");
+        }
     }
 
 
@@ -291,32 +398,19 @@ public class TwitchService : IHostedService, IDisposable
 
         if (!e.IsRequestedReconnect)
         {
-            // subscribe to topics
-            // create condition Dictionary
-            // need BOTH broadcaster and moderator values or EventSub returns an Error!
-            var condition = new Dictionary<string, string> { { "broadcaster_user_id", _userId }, { "moderator_user_id", _userId } };
-            // Create and send EventSubscription
-            await _api.Helix.EventSub.CreateEventSubSubscriptionAsync(
-                    "channel.channel_points_custom_reward_redemption.add", 
-                    "1", 
-                    condition, 
-                    EventSubTransportMethod.Websocket,
-                    _eventSubWebsocketClient.SessionId, 
-                    accessToken: App.Settings.GeneralSettings.OAuthToken
-                );
+            await SubscribeToActivityFeedAsync();
 
-            var conditionChatMessage = new Dictionary<string, string> {
-                { "broadcaster_user_id", _userId },
-                { "user_id", _userId }
-            };
-            await _api.Helix.EventSub.CreateEventSubSubscriptionAsync(
-                    "channel.chat.message", 
-                    "1", 
-                    conditionChatMessage, 
-                    EventSubTransportMethod.Websocket,
-                    _eventSubWebsocketClient.SessionId, 
-                    accessToken: App.Settings.GeneralSettings.OAuthToken
-                );
+            if (App.Settings.GeneralSettings.RedemptionsEnabled)
+            {
+                var conditionChatMessage = new Dictionary<string, string> {
+                    { "broadcaster_user_id", _userId },
+                    { "user_id", _userId }
+                };
+                await TrySubscribeAsync(
+                        "channel.chat.message",
+                        "1",
+                        conditionChatMessage);
+            }
 
             //await _twitchApi.Helix.EventSub.CreateEventSubSubscriptionAsync("channel.channel_points_automatic_reward_redemption.add", "2", condition, EventSubTransportMethod.Websocket,
             //_eventSubWebsocketClient.SessionId, accessToken: App.SettingsObject.GeneralSettings.OAuthToken);
@@ -426,6 +520,46 @@ public class TwitchService : IHostedService, IDisposable
             _eventSubWebsocketClient.ErrorOccurred -= OnErrorOccurred;
             _eventSubWebsocketClient.ChannelPointsCustomRewardRedemptionAdd -= OnChannelPointsCustomRewardRedemptionAdd;
             _eventSubWebsocketClient.ChannelChatMessage -= _eventSubWebsocketClient_ChannelChatMessage;
+            _eventSubWebsocketClient.ChannelFollow -= OnChannelFollow;
+            _eventSubWebsocketClient.ChannelSubscribe -= OnChannelSubscribe;
+            _eventSubWebsocketClient.ChannelSubscriptionGift -= OnChannelSubscriptionGift;
+            _eventSubWebsocketClient.ChannelSubscriptionMessage -= OnChannelSubscriptionMessage;
+            _eventSubWebsocketClient.ChannelCheer -= OnChannelCheer;
+            _eventSubWebsocketClient.ChannelRaid -= OnChannelRaid;
+        }
+    }
+
+    private async Task SubscribeToActivityFeedAsync()
+    {
+        var broadcaster = new Dictionary<string, string> { { "broadcaster_user_id", _userId } };
+        var broadcasterAndModerator = new Dictionary<string, string> { { "broadcaster_user_id", _userId }, { "moderator_user_id", _userId } };
+        var raidTarget = new Dictionary<string, string> { { "to_broadcaster_user_id", _userId } };
+
+        await TrySubscribeAsync("channel.follow", "2", broadcasterAndModerator);
+        await TrySubscribeAsync("channel.subscribe", "1", broadcaster);
+        await TrySubscribeAsync("channel.subscription.gift", "1", broadcaster);
+        await TrySubscribeAsync("channel.subscription.message", "1", broadcaster);
+        await TrySubscribeAsync("channel.cheer", "1", broadcaster);
+        await TrySubscribeAsync("channel.raid", "1", raidTarget);
+        await TrySubscribeAsync("channel.channel_points_custom_reward_redemption.add", "1", broadcasterAndModerator);
+    }
+
+    private async Task TrySubscribeAsync(string type, string version, Dictionary<string, string> condition)
+    {
+        try
+        {
+            await _api.Helix.EventSub.CreateEventSubSubscriptionAsync(
+                type,
+                version,
+                condition,
+                EventSubTransportMethod.Websocket,
+                _eventSubWebsocketClient.SessionId,
+                accessToken: App.Settings.GeneralSettings.OAuthToken);
+            _logger.LogInformation("Subscribed to {Type}", type);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not subscribe to {Type}", type);
         }
     }
 
@@ -462,6 +596,8 @@ public class TwitchService : IHostedService, IDisposable
         GC.SuppressFinalize(this);
     }
 }
+
+public readonly record struct ActivityNotice(string Text, DateTimeOffset OccurredAt, string Kind);
 
 public class AccessTokenValidatedEventArgs : EventArgs
 {

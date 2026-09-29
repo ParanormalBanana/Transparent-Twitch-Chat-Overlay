@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using TransparentTwitchChatWPF.Twitch;
 using TransparentTwitchChatWPF.Utils;
 using TransparentTwitchChatWPF.View.Settings;
 using Application = System.Windows.Application;
@@ -42,6 +43,7 @@ namespace TransparentTwitchChatWPF
         private WebView2 webView;
         private bool hasWebView2Runtime = false;
         private bool webViewProcessFailed = false;
+        private bool _deleteOnClose;
 
         // Tracked properties
         public string Url { get; set; }
@@ -53,7 +55,7 @@ namespace TransparentTwitchChatWPF
         public string customJS { get; set; }
         public bool AllowInteraction { get; set; }
 
-        public CustomWindow(MainWindow main, string URL, string displayName, string CustomCSS, bool allowInteraction)
+        public CustomWindow(MainWindow main, string URL, string displayName, string CustomCSS, bool allowInteraction, bool startBrowser = true)
         {
             this._mainWindow = main;
 
@@ -65,6 +67,7 @@ namespace TransparentTwitchChatWPF
             AllowInteraction = allowInteraction;
 
             InitializeComponent();
+            Topmost = false;
 
             HashCode = Hasher.Create64BitHash(URL);
             
@@ -90,6 +93,7 @@ namespace TransparentTwitchChatWPF
                 .PersistOn(nameof(Window.Closing))
                 .StopTrackingOn(nameof(Window.Closing));
             App.Settings.Tracker.Track(this);
+            WindowPlacement.Remember(this, Persist);
 
             this.Title = DisplayName;
 
@@ -99,14 +103,56 @@ namespace TransparentTwitchChatWPF
 
             if (ZoomLevel <= 0) ZoomLevel = 1;
 
+            if (TwitchWidgets.IsDashboardWidget(Url))
+            {
+                string updated = string.IsNullOrWhiteSpace(customCSS)
+                    ? TwitchWidgets.DefaultCssFor(Url)
+                    : customCSS.Replace("padding-bottom: 1rem !important", "padding-bottom: 30px !important", StringComparison.Ordinal);
+                if (TwitchWidgets.IsQuickActionsWidget(Url))
+                {
+                    string normalized = updated.Replace("\r\n", "\n").Trim();
+                    string paddingOnly = TwitchWidgets.PopoutFitCss.Replace("\r\n", "\n").Trim();
+                    if (string.IsNullOrWhiteSpace(normalized) || normalized == paddingOnly)
+                        updated = TwitchWidgets.QuickActionsCss;
+                    else
+                        updated = updated.Replace(".sunlight-page__header", ".stream-manager-panel-header", StringComparison.Ordinal);
+                }
+                if (!string.Equals(updated, customCSS, StringComparison.Ordinal))
+                {
+                    customCSS = updated;
+                    Persist();
+                }
+            }
+
             menuItemCheckboxAllowInteraction.IsChecked = AllowInteraction;
 
-            InitializeWebViewAsync();
+            Closed += CustomWindow_Closed;
+            Activated += (_, _) => _mainWindow.KeepChatAboveWidgets();
+            if (startBrowser)
+                InitializeWebViewAsync();
         }
 
         public void Persist()
         {
             App.Settings.Tracker.Persist(this);
+        }
+
+        public void ApplyWidgetSettings(string displayName, string customCss, bool allowInteraction)
+        {
+            DisplayName = string.IsNullOrWhiteSpace(displayName) ? HashCode : displayName.Trim();
+            customCSS = customCss ?? "";
+            AllowInteraction = allowInteraction;
+            menuItemCheckboxAllowInteraction.IsChecked = AllowInteraction;
+            UpdateTitle();
+            Persist();
+            if (webView?.CoreWebView2 != null)
+                webView.Reload();
+        }
+
+        public void CloseWithoutPrompt()
+        {
+            _deleteOnClose = true;
+            Close();
         }
 
         #region Setup And Initialization
@@ -155,6 +201,9 @@ namespace TransparentTwitchChatWPF
 
             // Initialize and subscribe to events.
             await webView.EnsureCoreWebView2Async(cwv2Environment);
+            TwitchWebSession.ApplyConnectedAccount(webView.CoreWebView2);
+            if (TwitchWidgets.IsDashboardWidget(Url))
+                await TwitchWebSession.PrepareDashboardPageAsync(webView.CoreWebView2, ViewerCountClient.ResolveChannelLogin());
 
             //webView.CoreWebView2InitializationCompleted += webView_CoreWebView2InitializationCompleted;
             webView.NavigationCompleted += webView_NavigationCompleted;
@@ -169,7 +218,9 @@ namespace TransparentTwitchChatWPF
             SetupBrowser();
 
             // This ensures the display mode is set only after the browser is fully initialized.
-            SetDisplayMode(WindowDisplayMode.Setup);
+            SetDisplayMode(App.Settings.GeneralSettings.AutoHideBorders
+                ? WindowDisplayMode.Overlay
+                : WindowDisplayMode.Setup);
         }
 
         private void SetupBrowser()
@@ -231,9 +282,12 @@ namespace TransparentTwitchChatWPF
                     break;
 
                 case WindowDisplayMode.Overlay:
-                    // STATE: Borders are hidden for overlay/in-game use.
-                    WindowHelper.SetWindowClickThrough(hwnd); // Make EVERYTHING click-through
-                    _isOverlayInteractable = false; // Always reset toggle when entering overlay mode
+                    // Borders hide, but a widget set to allow interaction stays clickable.
+                    _isOverlayInteractable = AllowInteraction;
+                    if (AllowInteraction)
+                        WindowHelper.SetWindowInteractable(hwnd);
+                    else
+                        WindowHelper.SetWindowClickThrough(hwnd);
                     if (webView != null)
                     {
                         this.Dispatcher.Invoke(() =>
@@ -636,38 +690,32 @@ namespace TransparentTwitchChatWPF
         #region Window Events
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
-            if (App.IsShuttingDown || webViewProcessFailed)
+            if (App.IsShuttingDown)
             {
-                e.Cancel = false; // Allow the window to close normally
+                e.Cancel = false;
                 return;
             }
 
-            if (MessageBox.Show("This will delete the settings for this window. Are you sure?", "Remove Window", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+            _mainWindow.ForgetClosedWidget(this);
+
+            if (webViewProcessFailed)
             {
-                this._mainWindow.RemoveCustomWindow(this.Url);
-
-                // TODO: Remove the tracking configuration for this window
-                /*string path = (Services.Tracker.StoreFactory as Jot.Storage.JsonFileStoreFactory).StoreFolderPath;
-                string jsonFile = Path.Combine(path, "CustomWindow_" + this.hashCode + ".json");
-                Debug.WriteLine(jsonFile);
-
-                //trackingConfig.AutoPersistEnabled = false;
-
-                if (File.Exists(jsonFile))
-                {
-                    try
-                    {
-                        File.Delete(jsonFile);
-                    }
-                    catch { }
-                }*/
-
                 e.Cancel = false;
+                return;
             }
+
+            if (_deleteOnClose)
+                _mainWindow.RemoveCustomWindow(this.Url);
             else
-            {
-                e.Cancel = true;
-            }
+                _mainWindow.DisableCustomWindow(this.Url);
+
+            e.Cancel = false;
+        }
+
+        private void CustomWindow_Closed(object sender, EventArgs e)
+        {
+            if (_deleteOnClose)
+                _mainWindow.DeleteWidgetSettingsFile(this.Url);
         }
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -691,13 +739,8 @@ namespace TransparentTwitchChatWPF
 
         public void SetTopMost(bool topMost)
         {
-            if (this.WindowState == WindowState.Minimized)
-            {
-                this.WindowState = WindowState.Normal;
-            }
-
-            var hwnd = new WindowInteropHelper(this).Handle;
-            WindowHelper.SetWindowPosTopMost(hwnd);
+            Topmost = false;
+            WindowHelper.SetWindowPosNotTopMost(new WindowInteropHelper(this).Handle);
         }
 
         #region Helpers

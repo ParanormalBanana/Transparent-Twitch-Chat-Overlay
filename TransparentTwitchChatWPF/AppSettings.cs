@@ -27,6 +27,8 @@ public class AppSettings
         if (_isInitialized) return;
         _isInitialized = true;
 
+        ApplyPendingImport();
+
         this.Tracker.Configure(this)
             .Properties<AppSettings>(w => new { w.GeneralSettings, w.jChatSettings })
             .Id(w => w.GetType().Name, null, false);
@@ -73,6 +75,32 @@ public class AppSettings
     public void Persist()
     {
         this.Tracker.Persist(this);
+    }
+
+    private void ApplyPendingImport()
+    {
+        string pending = Path.Combine(UserDataFolder, "import-pending");
+        if (!Directory.Exists(pending))
+            return;
+
+        try
+        {
+            foreach (string file in Directory.GetFiles(pending, "*.json"))
+                File.Copy(file, Path.Combine(UserDataFolder, Path.GetFileName(file)), true);
+
+            string soundsSrc = Path.Combine(pending, "sounds");
+            if (Directory.Exists(soundsSrc))
+            {
+                string soundsDest = ChatSounds.CustomFolder;
+                Directory.CreateDirectory(soundsDest);
+                foreach (string file in Directory.GetFiles(soundsSrc))
+                    File.Copy(file, Path.Combine(soundsDest, Path.GetFileName(file)), true);
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(pending, true); } catch { }
+        }
     }
 
     public void RevertChanges()
@@ -203,6 +231,7 @@ public class AppSettings
 public class GeneralSettings
 {
     public StringCollection CustomWindows { get; set; } = new StringCollection();
+    public StringCollection DisabledWidgets { get; set; } = new StringCollection();
     public string Username { get; set; } = string.Empty;
     public bool FadeChat { get; set; } = false;
     public string FadeTime { get; set; } = "120"; // fade time in seconds or "false"
@@ -218,6 +247,7 @@ public class GeneralSettings
     public byte OpacityLevel { get; set; } = 0;
     public bool AutoHideBorders { get; set; } = false;
     public bool ShowViewerCount { get; set; } = true;
+    public bool ShowActivityFeed { get; set; } = true;
     public bool EnableTrayIcon { get; set; } = true;
     public bool ConfirmClose { get; set; } = true;
     public bool HideTaskbarIcon { get; set; } = false;

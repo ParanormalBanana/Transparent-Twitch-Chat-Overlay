@@ -16,7 +16,7 @@
         BorderBrush="#5D077F"
         BorderThickness="4"
         ResizeMode="CanResizeWithGrip"
-        Topmost="True"
+        Topmost="False"
         ShowInTaskbar="false"
         Icon="/icons/twitch_chat2.ico"
         UseLayoutRounding="True"

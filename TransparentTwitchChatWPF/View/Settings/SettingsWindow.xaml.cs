@@ -12,6 +12,10 @@ namespace TransparentTwitchChatWPF;
 public partial class SettingsWindow : Window
 {
     public event Action<Window> CreateWidgetRequested;
+    public event Action<string, string> AddWidgetRequested;
+    public event Action<string> RemoveWidgetRequested;
+    public event Action<Window, string> EditWidgetRequested;
+    public event Action<string, bool> WidgetEnabledRequested;
     public event Action CheckForUpdateRequested;
     public event Action RestoreNativeChatDefaultsRequested;
 
@@ -20,6 +24,7 @@ public partial class SettingsWindow : Window
     private readonly GeneralSettingsPage _generalSettingsPage;
     private readonly ConnectionSettingsPage _connectionSettingsPage;
     private readonly WidgetSettingsPage _widgetSettingsPage;
+    private readonly BackupSettingsPage _backupSettingsPage;
     private readonly AboutSettingsPage _aboutSettingsPage;
 
     public SettingsWindow(
@@ -28,6 +33,7 @@ public partial class SettingsWindow : Window
         AppearanceSettingsPage appearancePage,
         GeneralSettingsPage generalPage,
         WidgetSettingsPage widgetPage,
+        BackupSettingsPage backupPage,
         AboutSettingsPage aboutPage)
     {
         InitializeComponent();
@@ -37,6 +43,7 @@ public partial class SettingsWindow : Window
         _appearanceSettingsPage = appearancePage;
         _generalSettingsPage = generalPage;
         _widgetSettingsPage = widgetPage;
+        _backupSettingsPage = backupPage;
         _aboutSettingsPage = aboutPage;
 
         _generalSettingsPage.CheckForUpdateRequested += () => {
@@ -49,9 +56,18 @@ public partial class SettingsWindow : Window
             // When the page requests a widget, fire this window's own event.
             CreateWidgetRequested?.Invoke(this);
         };
+        _widgetSettingsPage.DefaultWidgetRequested += (url, name) => AddWidgetRequested?.Invoke(url, name);
+        _widgetSettingsPage.RemoveWidgetRequested += url => RemoveWidgetRequested?.Invoke(url);
+        _widgetSettingsPage.EditWidgetRequested += url => EditWidgetRequested?.Invoke(this, url);
+        _widgetSettingsPage.WidgetEnabledRequested += (url, enabled) => WidgetEnabledRequested?.Invoke(url, enabled);
 
         // Set the initial page
         SettingsContentControl.Content = _chatSettingsPage;
+    }
+
+    public void SetWidgetNameLookup(Func<string, string> lookup)
+    {
+        _widgetSettingsPage.DisplayNameLookup = lookup;
     }
 
     private async void OKButton_Click(object sender, RoutedEventArgs e)
@@ -122,7 +138,11 @@ public partial class SettingsWindow : Window
                     SettingsContentControl.Content = _connectionSettingsPage;
                     break;
                 case "Widgets":
+                    _widgetSettingsPage.Refresh();
                     SettingsContentControl.Content = _widgetSettingsPage;
+                    break;
+                case "Backup":
+                    SettingsContentControl.Content = _backupSettingsPage;
                     break;
                 case "About":
                     SettingsContentControl.Content = _aboutSettingsPage;

@@ -18,6 +18,8 @@ public partial class ChatSettingsPage : UserControl
     public event Action AppearancePageRequested;
     public event Action RestoreNativeChatDefaultsRequested;
 
+    private string _lastSound = "None";
+
     public ChatSettingsPage()
     {
         InitializeComponent();
@@ -29,17 +31,14 @@ public partial class ChatSettingsPage : UserControl
     public void SetupValues()
     {
         LoadSoundClips();
-        var comboxBoxItem = comboChatSound.Items.OfType<ComboBoxItem>().
-            FirstOrDefault(x => x.Content.ToString() == App.Settings.GeneralSettings.ChatNotificationSound);
-        if (comboxBoxItem == null)
-            this.comboChatSound.SelectedIndex = 0;
-        else
-            this.comboChatSound.SelectedIndex = this.comboChatSound.Items.IndexOf(comboxBoxItem);
-
-        this.comboChatSound2.SelectedIndex = this.comboChatSound.SelectedIndex;
+        _lastSound = App.Settings.GeneralSettings.ChatNotificationSound ?? "None";
+        SelectSound(_lastSound);
 
         this.tbUsername.Text = App.Settings.GeneralSettings.Username;
-        this.tb_nativeChatUsername.Text = App.Settings.jChatSettings.Channel;
+        var nativeChannel = App.Settings.jChatSettings.Channel;
+        if (string.IsNullOrWhiteSpace(nativeChannel))
+            nativeChannel = App.Settings.GeneralSettings.Username;
+        this.tb_nativeChatUsername.Text = nativeChannel;
         this.tbUsername2.Text = App.Settings.GeneralSettings.Username;
         this.tbTwitchPopoutUsername.Text = App.Settings.GeneralSettings.Username;
         this.cbRedemptions.IsChecked = App.Settings.GeneralSettings.RedemptionsEnabled;
@@ -102,7 +101,7 @@ public partial class ChatSettingsPage : UserControl
                     this.tbCSS.Text = App.Settings.GeneralSettings.CustomCSS;
                 }
             }
-            else if (chatType == ChatTypes.KapChat)
+            else if (chatType == ChatTypes.NativeChat)
             {
                 this.kapChatGrid.Visibility = Visibility.Hidden;
                 this.twitchPopoutChat.Visibility = Visibility.Hidden;
@@ -174,8 +173,11 @@ public partial class ChatSettingsPage : UserControl
             }
             else if (chatType == ChatTypes.NativeChat)
             {
-                App.Settings.GeneralSettings.Username = this.tb_nativeChatUsername.Text;
-                App.Settings.jChatSettings.Channel = this.tb_nativeChatUsername.Text;
+                var nativeChannel = this.tb_nativeChatUsername.Text?.Trim();
+                if (string.IsNullOrWhiteSpace(nativeChannel))
+                    nativeChannel = App.Settings.GeneralSettings.Username;
+                App.Settings.GeneralSettings.Username = nativeChannel ?? string.Empty;
+                App.Settings.jChatSettings.Channel = nativeChannel ?? string.Empty;
                 App.Settings.GeneralSettings.jChatURL = string.Empty;
                 App.Settings.GeneralSettings.RedemptionsEnabled = this.cbRedemptions2.IsChecked ?? false;
                 if (App.Settings.GeneralSettings.RedemptionsEnabled)
@@ -265,26 +267,27 @@ public partial class ChatSettingsPage : UserControl
         comboChatSound.SelectedIndex = 0;
         comboChatSound2.SelectedIndex = 0;
 
-        string path = GetSoundClipsFolder();
-
-        if (!Directory.Exists(path)) return;
-
-        string[] filesWav = Directory.GetFiles(path, "*.wav");
-        string[] filesMp3 = Directory.GetFiles(path, "*.mp3");
-
-        foreach (string file in filesWav)
+        foreach (string fileName in ChatSounds.List())
         {
-            string fileName = Path.GetFileName(file);
             comboChatSound.Items.Add(new ComboBoxItem() { Content = fileName });
             comboChatSound2.Items.Add(new ComboBoxItem() { Content = fileName });
         }
 
-        foreach (string file in filesMp3)
-        {
-            string fileName = Path.GetFileName(file);
-            comboChatSound.Items.Add(new ComboBoxItem() { Content = fileName });
-            comboChatSound2.Items.Add(new ComboBoxItem() { Content = fileName });
-        }
+        comboChatSound.Items.Add(new ComboBoxItem() { Content = ChatSounds.CustomOption });
+        comboChatSound2.Items.Add(new ComboBoxItem() { Content = ChatSounds.CustomOption });
+    }
+
+    private void SelectSound(string name)
+    {
+        SelectCombo(comboChatSound, name);
+        SelectCombo(comboChatSound2, name);
+    }
+
+    private static void SelectCombo(ComboBox combo, string name)
+    {
+        var item = combo.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(x => string.Equals(x.Content?.ToString(), name, StringComparison.OrdinalIgnoreCase));
+        combo.SelectedIndex = item == null ? 0 : combo.Items.IndexOf(item);
     }
 
     private void PlayAudioFile(string file)
@@ -375,16 +378,44 @@ public partial class ChatSettingsPage : UserControl
 
     private void comboChatSound_DropDownClosed(object sender, EventArgs e)
     {
-        string file = Path.Combine(GetSoundClipsFolder(), this.comboChatSound.SelectedValue.ToString());
-
-        PlayAudioFile(file);
+        ChooseSound(comboChatSound);
     }
 
     private void comboChatSound_DropDownClosed2(object sender, EventArgs e)
     {
-        string file = Path.Combine(GetSoundClipsFolder(), this.comboChatSound2.SelectedValue.ToString());
+        ChooseSound(comboChatSound2);
+    }
 
-        PlayAudioFile(file);
+    private void ChooseSound(ComboBox source)
+    {
+        string selected = source.SelectedValue?.ToString() ?? "None";
+        if (selected == ChatSounds.CustomOption)
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = "Audio (*.wav;*.mp3)|*.wav;*.mp3",
+                Title = "Import chat sound"
+            };
+            if (dialog.ShowDialog() == true)
+            {
+                string name = ChatSounds.Import(dialog.FileName);
+                LoadSoundClips();
+                SelectSound(name);
+                _lastSound = name;
+                PlayAudioFile(ChatSounds.Resolve(name));
+            }
+            else
+            {
+                SelectSound(_lastSound);
+            }
+            return;
+        }
+
+        _lastSound = selected;
+        SelectSound(selected);
+        string file = ChatSounds.Resolve(selected);
+        if (file != null)
+            PlayAudioFile(file);
     }
 
     private void cbRedemptions_Checked(object sender, RoutedEventArgs e)

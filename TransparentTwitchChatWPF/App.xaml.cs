@@ -100,6 +100,7 @@ namespace TransparentTwitchChatWPF
                         services.AddTransient<AppearanceSettingsPage>();
                         services.AddTransient<GeneralSettingsPage>();
                         services.AddTransient<WidgetSettingsPage>();
+                        services.AddTransient<BackupSettingsPage>();
                         services.AddTransient<AboutSettingsPage>();
 
                         // Main settings window

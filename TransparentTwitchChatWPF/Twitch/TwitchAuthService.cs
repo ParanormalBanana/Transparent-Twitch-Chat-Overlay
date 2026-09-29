@@ -65,7 +65,7 @@ public class TwitchAuthService : ITwitchAuthService
     private void LaunchBrowser(string state)
     {
         string clientId = "yv4bdnndvd4gwsfw7jnfixp0mnofn7";
-        string scopes = HttpUtility.UrlEncode("user_read user:read:broadcast user:read:chat bits:read channel:read:redemptions channel:read:subscriptions");
+        string scopes = HttpUtility.UrlEncode("user_read user:read:broadcast user:read:chat bits:read channel:read:redemptions channel:read:subscriptions moderator:read:followers");
         string redirectUri = _prefix + "auth?";
         string url = $"https://id.twitch.tv/oauth2/authorize?response_type=token&client_id={clientId}&redirect_uri={redirectUri}&force_verify=true&state={state}&scope={scopes}";
 

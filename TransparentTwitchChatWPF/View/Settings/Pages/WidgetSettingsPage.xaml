@@ -14,32 +14,53 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <StackPanel Grid.Row="0">
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+        <StackPanel>
+            <TextBlock Margin="20,12,20,0" FontWeight="Bold" Text="Default widgets" />
+            <TextBlock
+                Margin="20,4,20,0"
+                FontStyle="Italic"
+                TextWrapping="Wrap"
+                Text="Stream Preview and Quick Actions use the Twitch account from Connections, so each widget does not ask you to log in." />
+            <StackPanel Orientation="Horizontal" Margin="20,8,20,0">
+                <ComboBox Name="DefaultWidgetCombo" Width="220" Height="28" />
+                <Button
+                    Content="Add"
+                    Width="80"
+                    Height="28"
+                    Margin="8,0,0,0"
+                    Click="AddDefaultWidget_Click" />
+            </StackPanel>
+
+            <TextBlock Margin="20,18,20,0" FontWeight="Bold" Text="Created widgets" />
+            <TextBlock
+                Name="NoWidgetsText"
+                Margin="20,6,20,0"
+                FontStyle="Italic"
+                Text="No widgets yet." />
+            <StackPanel Name="CreatedWidgetsPanel" Margin="20,4,20,0" />
+
             <Button
                 Name="NewWidgetButton"
-                Content="Create Widget"
+                Content="Create custom widget"
                 Height="32"
                 FontWeight="Bold"
-                HorizontalAlignment="Left" 
-                Margin="20,10,0,0"
-                VerticalAlignment="Top" 
-                Width="135" 
+                HorizontalAlignment="Left"
+                Margin="20,18,0,0"
+                VerticalAlignment="Top"
+                Width="180"
                 Click="NewWidgetButton_Click" />
-            <TextBlock 
-                Margin="5,10,5,0"
+            <TextBlock
+                Margin="20,10,20,0"
                 TextWrapping="Wrap"
-                Text="To see follows/subs/viewers/etc then you create a widget" />
-            <TextBlock 
-                Margin="5,5,5,0"
-                TextWrapping="Wrap"
-                Text="For information on how to do that please check the wiki at:" />
-            
-            <Label Margin="0,0,0,0">
+                Text="For other widget URLs, see the wiki:" />
+            <Label Margin="15,0,0,12">
                 <Hyperlink NavigateUri = "https://github.com/baffler/Transparent-Twitch-Chat-Overlay/wiki"
                        Hyperlink.RequestNavigate = "Hyperlink_RequestNavigate" >
                     <TextBlock Text="https://github.com/baffler/Transparent-Twitch-Chat-Overlay/wiki" />
                 </Hyperlink>
             </Label>
         </StackPanel>
+        </ScrollViewer>
     </Grid>
 </UserControl>

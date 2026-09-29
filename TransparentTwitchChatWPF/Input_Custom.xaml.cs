@@ -26,6 +26,15 @@ namespace TransparentTwitchChatWPF
             txtUrl.Text = Url;
         }
 
+        public void LoadExisting(string url, string displayName, string customCss, bool allowInteraction)
+        {
+            Title = "Edit Widget";
+            txtUrl.Text = url ?? "";
+            txtName.Text = displayName ?? "";
+            tbCustomCSS.Text = customCss ?? "";
+            cbAllowInteraction.IsChecked = allowInteraction;
+        }
+
         private void btnDialogOk_Click(object sender, RoutedEventArgs e)
         {
             this.DialogResult = true;
